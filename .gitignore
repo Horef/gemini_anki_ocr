@@ -19,3 +19,6 @@ __pycache__/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Local note proposals and recovery journals
+.anki_gemini_runs/

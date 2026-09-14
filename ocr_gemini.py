@@ -41,7 +41,7 @@ def main():
     try:
         notify("LaTeX OCR", "Processing image...")
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.1-flash-lite',
             contents=[prompt, img]
         )
         latex_text = response.text.strip()
@@ -57,6 +57,7 @@ def main():
         process.communicate(latex_text.encode('utf-8'))
         
         notify("LaTeX OCR Success", "LaTeX copied to clipboard!")
+        print(latex_text.encode('utf-8'))
         
     except Exception as e:
         notify("LaTeX OCR Error", str(e))
