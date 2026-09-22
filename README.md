@@ -26,17 +26,57 @@ Automate Anki flashcard creation and LaTeX OCR on macOS and Telegram on the go u
 ## 🚀 Setup & Installation
 
 ### 1. Prerequisites
-- **Python 3.8+**
+- **Conda** (Miniconda or Miniforge); the environment uses **Python 3.12.14**.
+- **macOS** for desktop clipboard, notifications, and Keyboard Maestro integration. The Telegram bot can run independently on other platforms.
 - **Google Gemini API Key**: Obtain from [Google AI Studio](https://aistudio.google.com/).
 - **Telegram Bot Token** *(for mobile bot)*: Create a bot via [@BotFather](https://t.me/BotFather) on Telegram.
 - **Anki + AnkiConnect** *(for desktop auto-import)*: Installed and running on `http://localhost:8765`.
 
 ### 2. Install Dependencies
 
-Install the required Python packages:
+From the downloaded or cloned project directory, create and activate the local
+`gemini_api` environment:
+
 ```bash
-pip install google-genai pillow python-telegram-bot
+conda env create --prefix ./gemini_api --file environment.yml
+conda activate ./gemini_api
+python -m pip check
 ```
+
+If `conda activate` is unavailable, run `conda init` for your shell and reopen the
+terminal first. Use the prefix (`./gemini_api`), because `conda activate gemini_api`
+looks for a globally named environment instead of this project directory.
+
+`environment.yml` pins Python, pip, and Tk (needed by the review window).
+`requirements.txt` pins the Python dependencies, including transitive packages.
+Conda chooses native builds for your platform; this is not a byte-identical
+cross-platform lock. The setup was validated on Apple Silicon macOS.
+The environment directory is ignored by Git; share the manifests, not the folder.
+
+For an existing checkout after dependency changes:
+
+```bash
+conda env update --prefix ./gemini_api --file environment.yml
+conda activate ./gemini_api
+python -m pip check
+python -m unittest discover -s tests -v
+```
+
+Updates do not necessarily remove obsolete pip packages; use a fresh checkout
+and environment when verifying a clean reproduction. When deliberately upgrading
+dependencies, test them in a clean environment and regenerate the pinned Python
+requirements (excluding Conda-managed packaging tools):
+
+```bash
+python -m pip freeze --exclude packaging --exclude setuptools --exclude wheel > requirements.txt
+```
+
+Keep the Conda pins in `environment.yml` in sync with the tested environment.
+Check that requirements contain version pins, not local `file://` build paths.
+
+Without activation, run scripts with `./gemini_api/bin/python` on macOS/Linux
+(or `.\gemini_api\python.exe` on Windows). Desktop scripts still require macOS.
+Tests use the standard-library `unittest` runner; no extra test dependency is needed.
 
 ### 3. Configuration
 
@@ -123,7 +163,11 @@ available for recovery; cleanup does not delete Anki notes or erase backups. The
 next generation for that deck starts a new journal. It never opens another deck's
 journal automatically while you are trying to return to studying.
 
-### Actual generation macro command
+The commands below use the project-local interpreter. Replace the absolute
+project path with your checkout path and update the Execute Shell Script action
+in each macro; creating the environment does not modify installed macros.
+
+### Generation macro command
 
 The mode variable `AnkiGenerationMode` uses the dropdown default
 `Review later|Automatic`. Your existing deck selection and remembered deck are
@@ -136,7 +180,7 @@ case "${KMVAR_AnkiGenerationMode:-Review later}" in
   Automatic) anki_mode=--auto-apply ;;
   *) anki_mode=--preview-only ;;
 esac
-"/opt/homebrew/Caskroom/miniforge/base/envs/gemini_api/bin/python" \
+"/Users/sergiyhoref/Scripts/GeminiAnkiCards/gemini_api/bin/python" \
   "/Users/sergiyhoref/Scripts/GeminiAnkiCards/anki_gemini.py" \
   "${KMVAR_AnkiDeckName:-General}" "$anki_mode" --quiet 2>&1
 ```
@@ -144,10 +188,10 @@ esac
 The old text-only empty-clipboard condition is disabled. The script checks both
 text and PNG clipboard content itself, so screenshots can reach the script.
 
-### Actual review macro command
+### Review macro command
 
 ```bash
-"/opt/homebrew/Caskroom/miniforge/base/envs/gemini_api/bin/python" \
+"/Users/sergiyhoref/Scripts/GeminiAnkiCards/gemini_api/bin/python" \
   "/Users/sergiyhoref/Scripts/GeminiAnkiCards/anki_gemini.py" \
   --review-latest --quiet 2>&1
 ```

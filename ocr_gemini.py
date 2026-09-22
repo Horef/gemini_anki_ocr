@@ -1,13 +1,70 @@
 import os
 import sys
 import subprocess
+from io import BytesIO
 from google import genai
+from google.genai import types
 from PIL import ImageGrab, Image
 
 # --- CONFIGURATION ---
 from config import OCR_GEMINI_API_KEY as API_KEY
 
 client = genai.Client(api_key=API_KEY)
+
+
+class RecitationBlockedError(RuntimeError):
+    """Gemini declined to reproduce text that resembles a source."""
+
+
+def extract_response_text(response):
+    """Return Gemini's text, or raise an error that preserves response metadata."""
+    text = response.text
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    candidates = response.candidates or []
+    candidate = candidates[0] if candidates else None
+    finish_reason = getattr(candidate, "finish_reason", None)
+    finish_message = getattr(candidate, "finish_message", None)
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    error_type = (
+        RecitationBlockedError
+        if getattr(finish_reason, "name", None) == "RECITATION"
+        or str(finish_reason).endswith(".RECITATION")
+        else RuntimeError
+    )
+    raise error_type(
+        "Gemini returned no OCR text "
+        f"(finish_reason={finish_reason!s}, finish_message={finish_message!r}, "
+        f"prompt_feedback={prompt_feedback!s})."
+    )
+
+
+def local_ocr(img):
+    """Use local Tesseract when Gemini's recitation filter blocks transcription."""
+    png = BytesIO()
+    img.save(png, format="PNG")
+    try:
+        result = subprocess.run(
+            ["tesseract", "stdin", "stdout", "-l", "eng"],
+            input=png.getvalue(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Gemini blocked verbatim transcription as RECITATION and the local "
+            "Tesseract fallback is not installed. Install it with `brew install tesseract`."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"Local Tesseract OCR failed: {detail}") from exc
+
+    text = result.stdout.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise RuntimeError("Local Tesseract OCR returned no text.")
+    return text
 
 def notify(title, message):
     """Sends a native macOS notification."""
@@ -42,9 +99,22 @@ def main():
         notify("LaTeX OCR", "Processing image...")
         response = client.models.generate_content(
             model='gemini-3.1-flash-lite',
-            contents=[prompt, img]
+            contents=[prompt, img],
+            config=types.GenerateContentConfig(
+                # OCR does not need tool calls or hidden reasoning. Disabling both
+                # also prevents a response containing only non-text/thought parts.
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True
+                ),
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                max_output_tokens=8192,
+            ),
         )
-        latex_text = response.text.strip()
+        try:
+            latex_text = extract_response_text(response)
+        except RecitationBlockedError:
+            notify("LaTeX OCR", "Gemini blocked recitation; using local OCR...")
+            latex_text = local_ocr(img)
         
         # Fail-safe: Strip markdown code blocks if the model includes them anyway
         if latex_text.startswith("```"):
@@ -61,6 +131,8 @@ def main():
         
     except Exception as e:
         notify("LaTeX OCR Error", str(e))
+        print(f"LaTeX OCR Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

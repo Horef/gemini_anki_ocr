@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -32,8 +33,32 @@ def anki(action, **params):
     req = urllib.request.Request('http://localhost:8765',
         data=packed(dict(action=action, version=6, params=params)).encode(),
         headers={'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=20) as response:
-        data = json.load(response)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            data = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f'AnkiConnect action {action!r} returned HTTP {exc.code}. '
+            'Confirm that AnkiConnect is listening on http://localhost:8765.'
+        ) from exc
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, 'reason', exc)
+        detail = f' ({reason})' if str(reason) else ''
+        raise RuntimeError(
+            f'Cannot reach AnkiConnect for action {action!r} at '
+            f'http://localhost:8765{detail}. Open Anki and confirm that the '
+            'AnkiConnect add-on is installed and enabled.'
+        ) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f'AnkiConnect timed out during action {action!r}. Confirm that Anki '
+            'is responsive, then try again.'
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f'AnkiConnect returned invalid JSON during action {action!r}. '
+            'Confirm that port 8765 is handled by the AnkiConnect add-on.'
+        ) from exc
     if not isinstance(data, dict) or 'error' not in data or 'result' not in data:
         raise RuntimeError(f'{action}: malformed AnkiConnect response')
     if data['error'] is not None:

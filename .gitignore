@@ -1,6 +1,13 @@
 # Configuration and secrets
 config.py
 .env
+.env.*
+!.env.example
+
+# Project-local environments
+/gemini_api/
+.venv/
+venv/
 
 # Python cache and byte-compiled files
 __pycache__/

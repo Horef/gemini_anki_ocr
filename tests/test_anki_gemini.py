@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
+import urllib.error
 from unittest.mock import patch, Mock
 import anki_gemini as app
 
@@ -22,6 +23,24 @@ def update():
 def create():
     a = update(); a['action'] = 'create'; del a['note_id']; a['tags'] = ['science']
     return a
+
+
+class AnkiConnectTests(unittest.TestCase):
+    @patch.object(app.urllib.request, 'urlopen')
+    def test_connection_refused_explains_how_to_restore_ankiconnect(self, urlopen):
+        urlopen.side_effect = urllib.error.URLError(
+            ConnectionRefusedError(61, 'Connection refused'))
+
+        with self.assertRaisesRegex(
+                RuntimeError,
+                r"Cannot reach AnkiConnect for action 'deckNames'.*Open Anki.*installed and enabled"):
+            app.anki('deckNames')
+
+    @patch.object(app.urllib.request, 'urlopen', side_effect=TimeoutError())
+    def test_timeout_identifies_ankiconnect_action(self, _urlopen):
+        with self.assertRaisesRegex(
+                RuntimeError, r"AnkiConnect timed out during action 'notesInfo'"):
+            app.anki('notesInfo', notes=[123])
 
 
 class ValidationTests(unittest.TestCase):
