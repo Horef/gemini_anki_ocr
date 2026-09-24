@@ -118,7 +118,7 @@ def main():
     if args.sync_index:
         g = Gemini(args)
         try:
-            build_index(g, args)
+            build_index(g)
         finally:
             g.client.close()
         return

@@ -14,11 +14,12 @@ Automate Anki flashcard creation and LaTeX OCR on macOS and Telegram on the go u
 
 - **Mac Desktop Anki Automation (`anki_gemini.py`)**:
   - Takes text or screenshots directly from your macOS clipboard.
-  - Automatically queries existing Anki cards via **AnkiConnect** to prevent duplicates.
+  - Finds related existing cards with hybrid keyword + semantic search over a local,
+    incrementally updated index, so similar cards are found even when worded differently.
   - Direct integration with local Anki app (`http://localhost:8765`).
 
 - **Instant Mac LaTeX OCR (`ocr_gemini.py`)**:
-  - Extracts text and equations from screenshots using `gemini-3.6-flash`.
+  - Extracts text and equations from screenshots using `gemini-3.1-flash-lite`.
   - Automatically copies LaTeX output to macOS clipboard (`pbcopy`) with native system notifications.
 
 ---
@@ -90,12 +91,25 @@ Open `config.py` and insert your API keys:
 ANKI_GEMINI_API_KEY = "your-gemini-api-key"
 OCR_GEMINI_API_KEY = "your-gemini-api-key"
 
+# "direct" (Google Gemini API) or "apigee" (AI gateway, no personal billing)
+GEMINI_TRANSPORT = "direct"
+APIGEE_API_KEY = ""
+APIGEE_BASE_URL = ""
+
 # Telegram Bot Token from @BotFather
 TELEGRAM_BOT_TOKEN = "your-telegram-bot-token"
 
 # Optional: Limit bot access to your Telegram user ID
 ALLOWED_TELEGRAM_USER_IDS = []
 ```
+
+Every setting can also be given as an environment variable of the same name, which
+takes priority over `config.py`. With `GEMINI_TRANSPORT = "apigee"`, every Gemini
+call (generation, token counting, embeddings, OCR, and the Telegram bot) goes through
+the gateway using `APIGEE_API_KEY` as the `x-apikey` header; the per-script API keys
+are then unused. Missing or invalid transport settings stop before any Gemini call.
+`ANKI_GEMINI_EMBEDDING_MODEL` (default `gemini-embedding-2`) selects the retrieval
+embedding model; changing it re-embeds the index automatically.
 
 ---
 
@@ -215,16 +229,28 @@ The LaTeX OCR macro is unchanged.
 ## 📁 Repository Structure
 
 ```
-├── telegram_bot.py     # Mobile Telegram Chatbot for Anki cards & LaTeX OCR
-├── anki_gemini.py      # Generation, queue management, and Anki writes
-├── anki_review.py      # Local review window
-├── anki_prompt.txt     # Scientific note-writing rules
-├── ocr_gemini.py       # Desktop LaTeX OCR script copying result to clipboard
-├── config.py           # Local configuration file storing API keys (gitignored)
-├── config.example.py   # Template configuration file
-├── .gitignore          # Excludes secrets, cache, and system files
-└── README.md           # Project documentation
+├── anki_gemini.py        # Desktop entry point used by Keyboard Maestro
+├── ocr_gemini.py         # Desktop LaTeX OCR script copying result to clipboard
+├── telegram_bot.py       # Mobile Telegram Chatbot for Anki cards & LaTeX OCR
+├── ankigen/              # Desktop card pipeline
+│   ├── cli.py            # Arguments, clipboard, and the generation run
+│   ├── retrieval.py      # Hybrid BM25 + embedding retrieval with rank fusion
+│   ├── index.py          # Local SQLite index of notes and cached embeddings
+│   ├── journal.py        # Proposal journals, review queue, verified apply
+│   ├── actions.py        # Structured-output schema and action validation
+│   ├── anki_connect.py   # AnkiConnect client
+│   ├── llm.py            # Gemini client (direct or Apigee) and API calls
+│   ├── settings.py       # Environment / config.py lookup
+│   ├── review_window.py  # Local Tk review window
+│   └── anki_prompt.txt   # Scientific note-writing rules
+├── tests/                # Offline unittest suite (+ review_demo.py UI smoke test)
+├── config.example.py     # Template configuration file (copy to gitignored config.py)
+├── environment.yml       # Conda environment
+└── requirements.txt      # Pinned Python dependencies
 ```
+
+Local, gitignored state: `.anki_gemini_runs/` (proposal journals) and
+`.anki_gemini_index/` (retrieval index; safe to delete, it is rebuilt).
 
 ---
 
@@ -236,24 +262,25 @@ MIT License
 
 `anki_gemini.py` now compares complete existing answers, rather than skipping every
 concept whose name already exists. The scientific note-writing rules live in
-`anki_prompt.txt`. Keep that file beside the script.
+`ankigen/anki_prompt.txt`.
 
 ### What happens when you run the script?
 
 | Mode | New notes | Existing-note edits | Generation calls |
 | --- | --- | --- | --- |
-| No mode flag | Applied automatically | Queued for review | At most 2 |
-| `--preview-only` (KM Review later) | Queued | Queued | At most 2 |
-| `--auto-apply` (KM Automatic) | Applied automatically | Applied automatically | At most 2 |
+| No mode flag | Applied automatically | Queued for review | At most 1 |
+| `--preview-only` (KM Review later) | Queued | Queued | At most 1 |
+| `--auto-apply` (KM Automatic) | Applied automatically | Applied automatically | At most 1 |
 | `--review-latest` | Review/apply latest waiting batch | Review/apply latest waiting batch | 0 |
 | `--apply RUN.json` | Apply outstanding creates | Apply outstanding edits | 0 |
+| `--sync-index` | — | — | 0 (embeddings only) |
 
 The plain CLI default is unchanged for compatibility. **The Keyboard Maestro
 macro explicitly passes a mode**, so its Review later choice queues everything
 and its Automatic choice applies both creates and updates. Generation never
 opens a review window or waits for confirmation. Only `--review-latest` opens the
-interactive window. `--auto-apply`, `--preview-only`, `--review-latest`, and
-`--apply` are mutually exclusive.
+interactive window. `--auto-apply`, `--preview-only`, `--review-latest`,
+`--apply`, and `--sync-index` are mutually exclusive.
 
 Examples:
 
@@ -291,26 +318,43 @@ conflicting information: clarify the source and regenerate if needed.
 
 ### Retrieval and decisions
 
-1. One Gemini extraction call reads the text and/or screenshot and returns search
-   terms and aliases. Images now participate in relevant-note retrieval.
-2. AnkiConnect searches the selected deck (including its subdecks) once per term.
-   Matches are sampled round-robin across terms, newest note IDs first within each
-   term, then fetched in batches and ranked locally by exact title, title phrase,
-   and full-field phrase matches. Only the two supported scientific note types
-   are eligible. No unrelated recent-note fallback is used.
-3. One Gemini comparison call receives the source and complete retrieved notes.
+1. **Index refresh (local, no Gemini).** All `ScientificBasic`/`ScientificTwoSided`
+   notes are mirrored into `.anki_gemini_index/index.sqlite3`. AnkiConnect
+   `notesModTime` identifies new or edited notes, so only those are re-read;
+   deleted notes are dropped. Older AnkiConnect versions fall back to re-reading
+   every note, and content digests still prevent unnecessary re-embedding.
+2. **Embedding (cheap, cached).** Each note's title and answer are embedded once
+   with `gemini-embedding-2` (768 dimensions) and re-embedded only when that text
+   changes. Media-only notes have no searchable text and are skipped. The first run
+   indexes your whole collection; run `anki_gemini.py --sync-index` once beforehand
+   so the first generation is not slowed down. A generation run embeds at most
+   `--embed-notes` new notes; the rest remain keyword-searchable until indexed.
+3. **Hybrid search.** The clipboard text is split into sentence-aligned chunks
+   (at most `--chunks`). For each chunk, local BM25 keyword search and embedding
+   similarity each pick their top `--matches-per-query` notes in the selected deck
+   (including subdecks); semantic matches must reach `--min-similarity`. A
+   screenshot is embedded directly as an extra query. All lists are merged with
+   reciprocal rank fusion, so notes found by several chunks or by both methods rank
+   first, and at most `--context-notes` complete notes are passed on.
+4. **Queued proposals.** Unreviewed create proposals for the same deck are ranked
+   the same way and the similar ones are sent as `queued_proposals`, so clipping the
+   same material twice before reviewing does not propose the same card twice.
+5. **One comparison call** receives the source and the complete retrieved notes.
    It proposes `create`, `update`, `skip`, or `review`, with reasons and evidence.
    Enrichment must retain the original recall target; independent facts belong in
    separate notes, and conflicts should be flagged for review.
-4. The entire response is validated before any imports. Unknown IDs, unsupported
+6. The entire response is validated before any imports. Unknown IDs, unsupported
    fields, incomplete answers, duplicate actions, malformed tags, literal reverse
    answer leakage, and removal of existing media references reject the batch.
    Non-STOP responses, including output truncation, also reject the batch.
 
-The original source is sent to both generation calls. Retrieved note content is
-sent only to the comparison call. There is no conversation history, autonomous
-tool loop, model repair, continuation, or automatic retry. A successful ordinary
-run uses exactly **two generation calls**; failures may stop after zero or one.
+If embeddings fail (network, quota, gateway), retrieval continues with keyword
+ranking only and says so on stderr. An image-only clipboard cannot be searched
+without embeddings, so that case stops before generation. AnkiConnect failures
+always stop the run. Similarity is only used to choose which notes Gemini sees;
+Gemini, not a threshold, decides whether something is a duplicate. There is no
+conversation history, autonomous tool loop, model repair, continuation, or
+automatic retry. A successful ordinary run uses exactly **one generation call**.
 
 ### Generous guardrails
 
@@ -319,17 +363,18 @@ than aggressively minimize ordinary usage. All numeric options must be positive.
 
 | Option | Default | Meaning |
 | --- | ---: | --- |
-| `--source-tokens` | 64,000 | Maximum source input, including screenshot tokens, counted using the extraction model |
+| `--source-tokens` | 64,000 | Maximum source input, including screenshot tokens |
 | `--context-tokens` | 48,000 | Token budget for the complete retrieved-note JSON |
-| `--request-tokens` | 128,000 | Each generation request's counted input, including instructions/schema as text plus a 1,024-token framing reserve |
+| `--request-tokens` | 128,000 | The generation request's counted input, including instructions/schema as text plus a 1,024-token framing reserve |
 | `--output-tokens` | 24,000 | Comparison generation output ceiling |
-| `--keyword-output-tokens` | 4,096 | Extraction generation output ceiling |
-| `--keywords` | 32 | Maximum extracted search terms, each at most 200 characters |
-| `--candidates` | 1,000 | Maximum note details fetched locally before ranking |
-| `--context-notes` | 80 | Maximum complete notes passed to comparison |
+| `--context-notes` | 30 | Maximum complete notes (and queued proposals) passed to comparison |
 | `--actions` | 100 | Maximum create/update/skip/review proposals in each generation response |
+| `--chunks` | 24 | Maximum source chunks used as search queries |
+| `--matches-per-query` | 5 | Keyword and semantic matches kept per chunk |
+| `--embed-notes` | 5,000 | Maximum notes embedded during one generation run (`--sync-index` embeds all) |
+| `--min-similarity` | 0.65 | Cosine floor for semantic matches (0–1); raise it if unrelated notes appear, lower it if duplicates are missed |
 
-For example, `--context-tokens 80000 --context-notes 120 --request-tokens 180000`
+For example, `--context-tokens 80000 --context-notes 60 --request-tokens 180000`
 raises retrieval context allowance. The configured model must support your chosen
 input/output sizes; the script does not silently clamp them or switch models.
 
@@ -341,22 +386,20 @@ leave the context empty; the script explicitly reports this and reduced duplicat
 coverage. Candidate/context limit messages go to stderr.
 
 Token counting is additional API traffic, but not generation. Normally there are
-four count requests: source, extraction request, context, comparison request.
-With 80 context notes, context fitting adds at most seven more counting requests.
+three count requests: source, context, comparison request. With 30 context notes,
+context fitting adds at most five more counting requests.
 Counts for instructions/schema use their text representation plus a reserve, so
 this is a request guardrail rather than an exact billing prediction. Returned
-usage metadata, including available thinking-token counts, is printed to stderr
-and stored in successful proposal journals. With `--quiet`, the stderr usage
-log is suppressed; a failure before journal creation may therefore leave no usage
-record. Each generation sends `max_output_tokens`; extraction disables thinking
-and comparison uses low thinking. There is no separate fixed dollar cap.
+usage metadata, including available thinking-token counts and embedded item counts,
+is printed to stderr and stored in successful proposal journals. With `--quiet`,
+the stderr usage log is suppressed; a failure before journal creation may therefore
+leave no usage record. The generation sends `max_output_tokens` and uses low
+thinking. There is no separate fixed dollar cap.
 
-Models default to `gemini-2.5-flash` for extraction and `gemini-3.8-flash` for
-comparison. `--keyword-model` and `--model` override them, but replacements must
-support structured JSON and the respective thinking configuration (zero budget
-for extraction, low thinking level for comparison). Use a recent `google-genai`
-SDK supporting `HttpRetryOptions`, `response_json_schema`, and `thinking_level`.
-The environment variable `ANKI_GEMINI_API_KEY` takes priority over `config.py`.
+The comparison model defaults to `gemini-3.7-flash`; `--model` overrides it, but
+replacements must support structured JSON and the low thinking level. Use a recent
+`google-genai` SDK supporting `HttpRetryOptions`, `response_json_schema`,
+`thinking_level`, and `gemini-embedding-2`.
 HTTP requests use one attempt only: Anki timeout 20 seconds, Gemini timeout 180
 seconds. Clipboard subprocesses time out after 15 seconds; raw clipboard size is
 also capped at 2 MB text and 15 MB PNG before API submission.
@@ -388,9 +431,9 @@ review flow. If a process is killed, remove its
 stale lock only after checking that no apply process is active and reviewing any
 pending action.
 
-Anki/API/search failures stop the workflow rather than pretending no duplicates
-exist. Search is lexical and bounded, so semantic duplicates can still be missed;
-Anki's `allowDuplicate=False` is an additional check, not a semantic guarantee.
+Anki/API failures stop the workflow rather than pretending no duplicates exist.
+Retrieval is bounded, so a duplicate can still be missed if it ranks below the
+context limit; Anki's `allowDuplicate=False` is an additional exact-match check.
 Screenshots are used as source material but are not automatically attached to new
 notes. Model-returned tags are honored for creates; updates preserve existing tags.
 

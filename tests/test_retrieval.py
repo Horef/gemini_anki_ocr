@@ -232,7 +232,7 @@ class RetrievalTests(unittest.TestCase):
     def test_build_index_embeds_everything(self):
         gemini = FakeGemini()
         with redirect_stderr(io.StringIO()), patch('sys.stdout', io.StringIO()) as out:
-            retrieval.build_index(gemini, args(), index.Index(self.root / 'index.sqlite3'))
+            retrieval.build_index(gemini, index.Index(self.root / 'index.sqlite3'))
         self.assertEqual(sum(len(c) for c in gemini.calls), 4)
         self.assertIn('4 notes, 4 refreshed, 4 embedded, 0 still waiting', out.getvalue())
 

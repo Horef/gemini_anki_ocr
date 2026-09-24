@@ -147,7 +147,7 @@ def embed_documents(gemini, index, pending, model, limit):
     return stored
 
 
-def build_index(gemini, args, index=None):
+def build_index(gemini, index=None):
     """Synchronise and embed every supported note; used by --sync-index."""
     index = index or Index()
     try:
@@ -158,7 +158,7 @@ def build_index(gemini, args, index=None):
         have = index.vectors(keys.values())
         pending = [(keys[nid], document(n['model'], n['fields']))
                    for nid, n in sorted(notes.items()) if keys[nid] not in have]
-        stored = embed_documents(gemini, index, pending, model, args.embed_notes)
+        stored = embed_documents(gemini, index, pending, model, len(pending))
         index.prune_vectors(set(keys.values()))
         print(f'Index: {len(notes)} notes, {changed} refreshed, {stored} embedded, '
               f'{len(pending) - stored} still waiting.')
