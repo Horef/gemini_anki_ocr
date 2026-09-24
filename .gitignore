@@ -4,6 +4,9 @@ config.py
 .env.*
 !.env.example
 
+# Agent/IDE planning artifacts
+.kiro/
+
 # Project-local environments
 /gemini_api/
 .venv/
@@ -27,5 +30,6 @@ __pycache__/
 ehthumbs.db
 Thumbs.db
 
-# Local note proposals and recovery journals
+# Local note proposals, recovery journals, and the retrieval index
 .anki_gemini_runs/
+.anki_gemini_index/
