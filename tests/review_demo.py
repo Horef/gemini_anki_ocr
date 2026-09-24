@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from anki_review import review_dialog
+from ankigen.review_window import review_dialog
 
 plan = {'deck': 'Demo — no Anki changes', 'status': {}, 'notes': [
     {'note_id': 123, 'fields': {'Question': 'What is the role of myelin?',

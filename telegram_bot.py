@@ -1,11 +1,9 @@
 import io
 import logging
-import os
 import sys
 import asyncio
 from PIL import Image
 
-from google import genai
 from google.genai import types
 from telegram import Update
 from telegram.constants import ParseMode, ChatAction
@@ -17,13 +15,13 @@ from telegram.ext import (
     filters,
 )
 
-# Import configuration
-from config import (
-    ANKI_GEMINI_API_KEY,
-    OCR_GEMINI_API_KEY,
-    TELEGRAM_BOT_TOKEN,
-    ALLOWED_TELEGRAM_USER_IDS,
-)
+from ankigen.llm import build_client
+from ankigen.settings import setting
+
+TELEGRAM_BOT_TOKEN = setting("TELEGRAM_BOT_TOKEN")
+ALLOWED_TELEGRAM_USER_IDS = setting("ALLOWED_TELEGRAM_USER_IDS", [])
+if isinstance(ALLOWED_TELEGRAM_USER_IDS, str):
+    ALLOWED_TELEGRAM_USER_IDS = [int(v) for v in ALLOWED_TELEGRAM_USER_IDS.split(",") if v.strip()]
 
 # Setup logging
 logging.basicConfig(
@@ -32,9 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize GenAI Clients (Using separate API keys for Anki & OCR)
-anki_client = genai.Client(api_key=ANKI_GEMINI_API_KEY)
-ocr_client = genai.Client(api_key=OCR_GEMINI_API_KEY)
+# Built in main() so importing this module needs no credentials.
+anki_client = None
+ocr_client = None
 
 # Per-user deck settings
 user_decks = {}
@@ -278,11 +276,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Starts the Telegram bot long-polling loop."""
+    global anki_client, ocr_client
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
         print("❌ Error: TELEGRAM_BOT_TOKEN is not set in config.py or environment variables.")
         print("Please set your bot token obtained from @BotFather in config.py and try again.")
         sys.exit(1)
 
+    anki_client = build_client("ANKI_GEMINI_API_KEY")
+    ocr_client = build_client("OCR_GEMINI_API_KEY")
     print("🚀 Starting Gemini Anki & OCR Telegram Bot...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 

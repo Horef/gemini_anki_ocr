@@ -1,15 +1,10 @@
-import os
 import sys
 import subprocess
 from io import BytesIO
-from google import genai
 from google.genai import types
 from PIL import ImageGrab, Image
 
-# --- CONFIGURATION ---
-from config import OCR_GEMINI_API_KEY as API_KEY
-
-client = genai.Client(api_key=API_KEY)
+from ankigen.llm import build_client
 
 
 class RecitationBlockedError(RuntimeError):
@@ -97,6 +92,7 @@ def main():
     
     try:
         notify("LaTeX OCR", "Processing image...")
+        client = build_client('OCR_GEMINI_API_KEY')
         response = client.models.generate_content(
             model='gemini-3.1-flash-lite',
             contents=[prompt, img],
