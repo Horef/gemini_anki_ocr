@@ -54,5 +54,16 @@ class LocalOcrTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], ["tesseract", "stdin", "stdout", "-l", "eng"])
 
 
+class NotifyTests(unittest.TestCase):
+    @patch.object(ocr_gemini.subprocess, "run")
+    def test_quotes_and_backslashes_cannot_break_out_of_the_script_string(self, run):
+        ocr_gemini.notify('Title "x"', 'bad \\" & do shell script "rm"')
+        script = run.call_args.args[0][2]
+        self.assertEqual(
+            script,
+            'display notification "bad \\\\\\" & do shell script \\"rm\\"" '
+            'with title "Title \\"x\\""')
+
+
 if __name__ == "__main__":
     unittest.main()

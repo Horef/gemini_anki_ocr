@@ -61,10 +61,14 @@ def local_ocr(img):
         raise RuntimeError("Local Tesseract OCR returned no text.")
     return text
 
+def applescript_string(value):
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
 def notify(title, message):
     """Sends a native macOS notification."""
-    escaped_message = message.replace('"', '\\"')
-    subprocess.run(["osascript", "-e", f'display notification "{escaped_message}" with title "{title}"'])
+    subprocess.run(["osascript", "-e", f"display notification {applescript_string(message)} "
+                    f"with title {applescript_string(title)}"], timeout=15)
 
 def main():
     # 1. Grab the image from the clipboard
@@ -119,8 +123,8 @@ def main():
                 latex_text = '\n'.join(lines[1:-1])
         
         # 3. Copy the result to the macOS clipboard via pbcopy
-        process = subprocess.Popen('pbcopy', env={'LANG': 'en_US.UTF-8'}, stdin=subprocess.PIPE)
-        process.communicate(latex_text.encode('utf-8'))
+        subprocess.run(['pbcopy'], input=latex_text.encode('utf-8'),
+                       env={'LANG': 'en_US.UTF-8'}, check=True, timeout=15)
         
         notify("LaTeX OCR Success", "LaTeX copied to clipboard!")
         print(latex_text.encode('utf-8'))
