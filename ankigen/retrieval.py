@@ -167,7 +167,7 @@ def build_index(gemini, index=None):
 
 
 def retrieve(deck, text, image, gemini, args, index=None):
-    """Return (existing note snapshots, queued create proposals) most relevant to the source."""
+    """Return (note snapshots, similar queued creates, diagnostics) for the source."""
     index = index or Index()
     try:
         return _retrieve(index, deck, text, image, gemini, args)
@@ -190,7 +190,8 @@ def _retrieve(index, deck, text, image, gemini, args):
     per_query = args.matches_per_query
     lexical = BM25({key: tokens(' '.join(title_and_body(m, f))) for key, (m, f, _) in docs.items()})
     rankings = [lexical.rank(q, per_query) for q in queries]
-    dense = _dense_rankings(gemini, index, docs, queries, image, per_query, args)
+    keyword_hits = {key for ranking in rankings for key in ranking}
+    dense, similarity = _dense_rankings(gemini, index, docs, queries, image, per_query, args)
     if dense is None and not queries:
         raise RuntimeError('Semantic search is unavailable and the clipboard has no text, so '
                            'existing notes cannot be compared. Nothing was generated.')
@@ -200,11 +201,15 @@ def _retrieve(index, deck, text, image, gemini, args):
     note_ids = [key for key in ranked if key >= 0][:args.context_notes]
     similar_queued = [{'model': queued[-1 - key]['model'], 'fields': queued[-1 - key]['fields']}
                       for key in ranked if key < 0][:args.context_notes]
-    return anki_connect.fetch_notes(note_ids), similar_queued
+    diagnostics = {'queries': len(queries) + bool(image), 'min_similarity': args.min_similarity,
+                   'semantic': dense is not None,
+                   'notes': [{'note_id': key, 'similarity': similarity.get(key),
+                              'keyword': key in keyword_hits} for key in note_ids]}
+    return anki_connect.fetch_notes(note_ids), similar_queued, diagnostics
 
 
 def _dense_rankings(gemini, index, docs, queries, image, per_query, args):
-    """Embedding rankings per query, or None when semantic search is unavailable."""
+    """Return (rankings per query, best similarity per key); rankings is None if unavailable."""
     model = embedding_model()
     keys = {key: digest(model, DIMENSION, d) for key, (_, _, d) in docs.items()}
     vectors = index.vectors(keys.values())
@@ -223,7 +228,7 @@ def _dense_rankings(gemini, index, docs, queries, image, per_query, args):
         query_vectors = [unit(v) for v in gemini.embed(items, model, DIMENSION)] if items else []
     except (RuntimeError, ValueError) as exc:
         print(f'Semantic search unavailable; using keyword ranking only. {exc}', file=sys.stderr)
-        return None
+        return None, {}
     missing = sum(keys[k] not in vectors for k in docs)
     if missing:
         print(f'Semantic index covers {len(docs) - missing}/{len(docs)} notes; the rest are '
@@ -231,11 +236,12 @@ def _dense_rankings(gemini, index, docs, queries, image, per_query, args):
               file=sys.stderr)
     indexed = sorted(k for k in docs if keys[k] in vectors)
     if not indexed or not query_vectors:
-        return []
+        return [], {}
     matrix = np.stack([vectors[keys[k]] for k in indexed])
     similarity = matrix @ np.stack(query_vectors).T
+    best = {key: round(float(value), 3) for key, value in zip(indexed, similarity.max(axis=1))}
     rankings = []
     for column in similarity.T:
         top = np.lexsort((np.array(indexed), -column))[:per_query]
         rankings.append([indexed[i] for i in top if column[i] >= args.min_similarity])
-    return rankings
+    return rankings, best

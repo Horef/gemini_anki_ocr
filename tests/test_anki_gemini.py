@@ -320,7 +320,7 @@ class PipelineTests(unittest.TestCase):
                  patch.object(cli, 'Gemini', return_value=g), \
                  patch.object(anki_connect, 'request', side_effect=api), \
                  patch.object(cli, 'clipboard', return_value=('new fact', None)), \
-                 patch.object(cli, 'retrieve', return_value=([note()], [])) as retrieve:
+                 patch.object(cli, 'retrieve', return_value=([note()], [], {})) as retrieve:
                 cli.main()
             self.assertEqual(g.generate.call_count, 1)
             self.assertEqual(retrieve.call_args.args[:3], ('D', 'new fact', None))
@@ -342,7 +342,7 @@ class PipelineTests(unittest.TestCase):
             g.generate.return_value = {'actions': []}
             queued = [{'model': 'ScientificBasic', 'fields': {'Question': 'Q', 'Answer': 'A'}}]
             with patch.object(journal, 'STATE', Path(directory)), \
-                 patch.object(cli, 'retrieve', return_value=([], queued)):
+                 patch.object(cli, 'retrieve', return_value=([], queued, {'notes': []})):
                 cli.generate(g, cli.parser().parse_args(['D', '--preview-only']), 'text', None)
             payload = json.loads(g.generate.call_args.args[1][-1])
             self.assertEqual(payload['queued_proposals'], queued)

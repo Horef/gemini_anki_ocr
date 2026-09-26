@@ -325,10 +325,12 @@ conflicting information: clarify the source and regenerate if needed.
    every note, and content digests still prevent unnecessary re-embedding.
 2. **Embedding (cheap, cached).** Each note's title and answer are embedded once
    with `gemini-embedding-2` (768 dimensions) and re-embedded only when that text
-   changes. Media-only notes have no searchable text and are skipped. The first run
-   indexes your whole collection; run `anki_gemini.py --sync-index` once beforehand
-   so the first generation is not slowed down. A generation run embeds at most
-   `--embed-notes` new notes; the rest remain keyword-searchable until indexed.
+   changes. Media-only notes have no searchable text and are skipped. Every
+   generation run embeds any not-yet-indexed notes of its target deck, so cards
+   added by this script or by hand are picked up automatically. `--sync-index`
+   embeds the whole collection at once; it is only worth running after a large
+   manual import, so the next generation is not slowed down. A generation run
+   embeds at most `--embed-notes` new notes; the rest remain keyword-searchable.
 3. **Hybrid search.** The clipboard text is split into sentence-aligned chunks
    (at most `--chunks`). For each chunk, local BM25 keyword search and embedding
    similarity each pick their top `--matches-per-query` notes in the selected deck
@@ -372,7 +374,7 @@ than aggressively minimize ordinary usage. All numeric options must be positive.
 | `--chunks` | 24 | Maximum source chunks used as search queries |
 | `--matches-per-query` | 5 | Keyword and semantic matches kept per chunk |
 | `--embed-notes` | 5,000 | Maximum notes embedded during one generation run (`--sync-index` embeds all) |
-| `--min-similarity` | 0.65 | Cosine floor for semantic matches (0–1); raise it if unrelated notes appear, lower it if duplicates are missed |
+| `--min-similarity` | 0.70 | Cosine floor for semantic matches (0–1); raise it if unrelated notes appear, lower it if duplicates are missed. Each journal run records every context note's best similarity under `runs[].retrieval` for tuning |
 
 For example, `--context-tokens 80000 --context-notes 60 --request-tokens 180000`
 raises retrieval context allowance. The configured model must support your chosen

@@ -216,7 +216,7 @@ class AutomaticPipelineTests(StateMixin, unittest.TestCase):
              patch.object(cli, 'Gemini', return_value=g), \
              patch.object(anki_connect, 'request', side_effect=self.api), \
              patch.object(cli, 'clipboard', return_value=('X', None)), \
-             patch.object(cli, 'retrieve', return_value=([], [])), \
+             patch.object(cli, 'retrieve', return_value=([], [], {})), \
              patch.object(cli, 'apply_plan', side_effect=apply):
             cli.main()
         self.assertEqual(g.generate.call_count, 1)

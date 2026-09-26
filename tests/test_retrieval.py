@@ -146,7 +146,8 @@ class RetrievalTests(unittest.TestCase):
         idx = index.Index(self.root / 'index.sqlite3')
         with redirect_stderr(io.StringIO()) as err:
             result = retrieval.retrieve('D', text, image, gemini, args(**kw), idx)
-        return result, err.getvalue()
+        self.diagnostics = result[2]
+        return result[:2], err.getvalue()
 
     def test_semantic_match_without_shared_words_and_deck_scope(self):
         (notes, queued), _ = self.retrieve(FakeGemini())
@@ -215,6 +216,17 @@ class RetrievalTests(unittest.TestCase):
         (notes, queued), _ = self.retrieve(FakeGemini())
         self.assertTrue(all(n['note_id'] > 0 for n in notes))
         self.assertEqual(queued, [{'model': 'ScientificBasic', 'fields': plan['actions'][0]['fields']}])
+
+    def test_diagnostics_record_similarity_and_keyword_hits(self):
+        self.retrieve(FakeGemini(), text='Neurons transmit signals. What is blood sugar?')
+        by_id = {n['note_id']: n for n in self.diagnostics['notes']}
+        self.assertGreater(by_id[1]['similarity'], 0.5)
+        self.assertFalse(by_id[1]['keyword'])
+        self.assertTrue(by_id[2]['keyword'])
+        self.assertTrue(self.diagnostics['semantic'])
+        self.retrieve(FakeGemini(fail=True), text='What is blood sugar?')
+        self.assertFalse(self.diagnostics['semantic'])
+        self.assertIsNone(self.diagnostics['notes'][0]['similarity'])
 
     def test_media_only_notes_are_not_embedded_or_ranked(self):
         self.anki.notes[4] = raw(4, '<img src="a.png">', '<img src="b.png">')

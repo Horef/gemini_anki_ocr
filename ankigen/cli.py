@@ -87,8 +87,8 @@ def parser():
     p.add_argument('--only', nargs='+', type=int, help='With --apply: apply only these preview action indices')
     p.add_argument('--sync-index', action='store_true', help='Refresh and embed the local retrieval index; no generation')
     p.add_argument('--model', default='gemini-3.7-flash')
-    # Calibrated on gemini-embedding-2: near-duplicates ~0.8, same-field neighbours ~0.65.
-    p.add_argument('--min-similarity', type=float, default=0.65,
+    # Calibrated on gemini-embedding-2: near-duplicates ~0.8, tangential notes ~0.65.
+    p.add_argument('--min-similarity', type=float, default=0.7,
                    help='Cosine floor for semantic matches (0-1); keyword matches are unaffected')
     for name, value in DEFAULTS.items():
         p.add_argument('--' + name.replace('_', '-'), type=int, default=value)
@@ -142,7 +142,7 @@ def generate(g, args, text, image):
         parts.append(g.types.Part.from_bytes(data=image, mime_type='image/png'))
     if g.count(args.model, parts, stage='source token counting') > args.source_tokens:
         raise ValueError('Source exceeds token guardrail; use a smaller excerpt. Nothing was truncated.')
-    ranked, queued = retrieve(args.deck, text, image, g, args)
+    ranked, queued, diagnostics = retrieve(args.deck, text, image, g, args)
     notes = select_context(ranked, args, lambda value: g.count(
         args.model, [value], stage='retrieved-note context token counting'))
     payload = {'deck': args.deck, 'existing_notes': notes}
@@ -156,7 +156,7 @@ def generate(g, args, text, image):
     plan = dict(version=2, deck=args.deck, notes=notes, actions=actions, status={},
                 usage=g.usage, limits=limits, created_at=now, updated_at=now,
                 runs=[{'created_at': now, 'usage': g.usage, 'limits': limits,
-                       'action_count': len(actions)}])
+                       'action_count': len(actions), 'retrieval': diagnostics}])
     path, new_indices = store_generation(plan)
     if not args.preview_only:
         apply_plan(path, {'create', 'update'} if args.auto_apply else {'create'}, new_indices)
