@@ -33,3 +33,4 @@ Thumbs.db
 # Local note proposals, recovery journals, and the retrieval index
 .anki_gemini_runs/
 .anki_gemini_index/
+.anki_blocks_progress.json

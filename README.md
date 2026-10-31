@@ -136,6 +136,18 @@ python3 telegram_bot.py
   ```bash
   python3 ocr_gemini.py
   ```
+- **Whole study guide, block by block** (`anki_blocks.py`): sends each `### N.M Title`
+  block of a Markdown note through the same generation run, one Gemini call per block,
+  without touching the clipboard. Inline `<svg>` lines are dropped (cards are built from
+  text) and figure captions are kept as text. Finished blocks are remembered in the
+  gitignored `.anki_blocks_progress.json`, so rerunning the same command resumes after a
+  failure. Auto-apply by default (`--preview-only` to review instead).
+  ```bash
+  ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --list        # blocks and progress
+  ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --from 2.4    # 2.4 onward
+  ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --only 5.3 5.4
+  ```
+  `--force` re-sends finished blocks and can create duplicates.
 
 ---
 
@@ -230,6 +242,7 @@ The LaTeX OCR macro is unchanged.
 
 ```
 ├── anki_gemini.py        # Desktop entry point used by Keyboard Maestro
+├── anki_blocks.py        # Send every block of a study-guide Markdown note, one run each
 ├── ocr_gemini.py         # Desktop LaTeX OCR script copying result to clipboard
 ├── telegram_bot.py       # Mobile Telegram Chatbot for Anki cards & LaTeX OCR
 ├── ankigen/              # Desktop card pipeline
@@ -249,8 +262,9 @@ The LaTeX OCR macro is unchanged.
 └── requirements.txt      # Pinned Python dependencies
 ```
 
-Local, gitignored state: `.anki_gemini_runs/` (proposal journals) and
-`.anki_gemini_index/` (retrieval index; safe to delete, it is rebuilt).
+Local, gitignored state: `.anki_gemini_runs/` (proposal journals),
+`.anki_gemini_index/` (retrieval index; safe to delete, it is rebuilt) and
+`.anki_blocks_progress.json` (blocks already sent by `anki_blocks.py`).
 
 ---
 
