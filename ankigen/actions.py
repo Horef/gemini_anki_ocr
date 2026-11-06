@@ -51,7 +51,43 @@ def media(value):
     return re.findall(r'<(?:img|audio|video|source)\b[^>]*>|\[sound:[^\]]+\]', value, re.I)
 
 
-def validate(data, notes, limit):
+IMG_TAG = re.compile(r'<img\b[^>]*>', re.I)
+IMG_SRC = re.compile(r"""\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.I)
+
+
+def image_sources(value):
+    """[(tag, src or None)] for every <img> in an HTML field value."""
+    out = []
+    for tag in IMG_TAG.findall(value):
+        m = IMG_SRC.search(tag)
+        out.append((tag, (m.group(1) if m.group(1) is not None else m.group(2)) if m else None))
+    return out
+
+
+def image_names(actions):
+    """Image file names used by the fields of create/update actions."""
+    return {src for a in actions for v in (a.get('fields') or {}).values()
+            if isinstance(v, str) for _, src in image_sources(v) if src}
+
+
+def check_images(index, fields, old_fields, supplied):
+    """Reject <img> tags that point at anything but a supplied image (or, for an
+    update, an image the note already shows)."""
+    for k, v in fields.items():
+        for tag, src in image_sources(v):
+            if tag in old_fields.get(k, ''):
+                continue
+            if src is None:
+                raise ValueError(f'Action {index}: <img> in {k} needs a quoted src.')
+            if src not in supplied:
+                names = ', '.join(sorted(supplied)) or 'none were supplied'
+                raise ValueError(f'Action {index}: image {src!r} in {k} was not supplied. '
+                                 f'Use only the supplied image names exactly as given ({names}).')
+
+
+def validate(data, notes, limit, images=()):
+    """`images`: names of images that may be shown with <img src="NAME">."""
+    supplied = set(images)
     if not isinstance(data, dict) or set(data) != {'actions'}:
         raise ValueError('Expected an actions object.')
     actions = data['actions']
@@ -110,6 +146,7 @@ def validate(data, notes, limit):
                 raise ValueError('Cannot change note type.')
             if tags:
                 raise ValueError('Updates preserve existing tags; omit update tags.')
+            check_images(index, fields, old['fields'], supplied)
             for k, v in fields.items():
                 if any(v.count(m) < old['fields'][k].count(m) for m in media(old['fields'][k])):
                     raise ValueError('Update would remove embedded media.')
@@ -117,6 +154,7 @@ def validate(data, notes, limit):
         else:
             if 'note_id' in a:
                 raise ValueError('Create action cannot specify a note ID.')
+            check_images(index, fields, {}, supplied)
             title = plain(fields[FIELDS[model][0]]).casefold()
             if (model, title) in titles:
                 raise ValueError('Duplicate creation in batch.')

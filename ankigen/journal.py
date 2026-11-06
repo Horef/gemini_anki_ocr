@@ -8,7 +8,7 @@ import re
 import uuid
 
 from . import anki_connect
-from .actions import validate
+from .actions import image_sources, validate
 from .anki_connect import plain, quoted, snapshot
 
 STATE = Path(__file__).resolve().parents[1] / '.anki_gemini_runs'
@@ -59,6 +59,21 @@ def action_identifier(action, limit=90):
     return value if len(value) <= limit else value[:limit - 1].rstrip() + '…'
 
 
+def media_names(plan):
+    """Names of the images stored in a journal (the ones its actions reference)."""
+    return set(plan.get('media', {}))
+
+
+def upload_media(plan, action, uploaded):
+    """Store the journal's images that this action shows, before the note is written."""
+    for value in action.get('fields', {}).values():
+        for _, src in image_sources(value):
+            if src in plan.get('media', {}) and src not in uploaded:
+                anki_connect.request('storeMediaFile', filename=src,
+                                     data=plan['media'][src]['data'])
+                uploaded.add(src)
+
+
 def waiting(plan):
     return [(i, a) for i, a in enumerate(plan['actions'])
             if a['action'] != 'skip' and plan['status'].get(str(i)) not in CLOSED]
@@ -103,11 +118,12 @@ def is_duplicate_error(exc):
 
 def _apply_locked(path, kinds, only=None):
     plan = json.loads(path.read_text())
-    validate({'actions': plan['actions']}, plan['notes'], plan['limits']['actions'])
+    validate({'actions': plan['actions']}, plan['notes'], plan['limits']['actions'],
+             media_names(plan))
     if only is not None and any(i < 0 or i >= len(plan['actions']) for i in only):
         raise ValueError('Selected action index is outside the proposal.')
     old = {n['note_id']: n for n in plan['notes']}
-    skipped = []
+    skipped, uploaded = [], set()
     for i, a in enumerate(plan['actions']):
         key = str(i)
         if (a['action'] not in kinds or plan['status'].get(key) in CLOSED
@@ -122,6 +138,7 @@ def _apply_locked(path, kinds, only=None):
             if a['note_id'] not in anki_connect.request(
                     'findNotes', query=f'deck:{quoted(plan["deck"])} nid:{a["note_id"]}'):
                 raise RuntimeError('Note moved outside the target deck.')
+        upload_media(plan, a, uploaded)  # A failed upload leaves nothing pending.
         plan['status'][key] = 'pending'
         save(path, plan)  # Original fields are already in plan, before every write.
         try:
@@ -244,7 +261,8 @@ def store_generation(plan):
             first = len(saved['actions'])
             combined = saved['actions'] + plan['actions']
             combined_limit = saved['limits']['actions'] + plan['limits']['actions']
-            validate({'actions': combined}, saved['notes'], combined_limit)
+            saved.setdefault('media', {}).update(plan.get('media', {}))
+            validate({'actions': combined}, saved['notes'], combined_limit, media_names(saved))
             saved['actions'] = combined
             saved['limits']['actions'] = combined_limit
             saved.setdefault('usage', []).extend(plan.get('usage', []))
@@ -288,7 +306,8 @@ def review_latest(deck=None):
     path, _ = batches[0]
     with plan_lock(path):
         plan = json.loads(path.read_text())
-        validate({'actions': plan['actions']}, plan['notes'], plan['limits']['actions'])
+        validate({'actions': plan['actions']}, plan['notes'], plan['limits']['actions'],
+             media_names(plan))
         if any(v == 'pending' for v in plan['status'].values()):
             raise RuntimeError(f'This batch has an uncertain write. Inspect Anki and {path}; it will not be retried or discarded automatically.')
         from . import review_window

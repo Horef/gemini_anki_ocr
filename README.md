@@ -32,6 +32,10 @@ Automate Anki flashcard creation and LaTeX OCR on macOS and Telegram on the go u
 - **Google Gemini API Key**: Obtain from [Google AI Studio](https://aistudio.google.com/).
 - **Telegram Bot Token** *(for mobile bot)*: Create a bot via [@BotFather](https://t.me/BotFather) on Telegram.
 - **Anki + AnkiConnect** *(for desktop auto-import)*: Installed and running on `http://localhost:8765`.
+- **Google Chrome** *(only to put inline-SVG figures on cards)*: `anki_blocks.py` renders
+  SVG with headless Chrome. It is found in `/Applications`, then Chromium/Edge, then on
+  `PATH`; set `ANKIGEN_CHROME` to use another binary. Pillow (already pinned) crops the
+  screenshot.
 
 ### 2. Install Dependencies
 
@@ -132,20 +136,27 @@ python3 telegram_bot.py
   ```bash
   python3 anki_gemini.py "Medical Deck"
   ```
+- **Generate Anki Cards with images** (`--image` is repeatable; PNG, JPEG, GIF, WebP or SVG):
+  ```bash
+  python3 anki_gemini.py "Medical Deck" --image retina.png --image circuit.svg
+  ```
 - **LaTeX OCR**:
   ```bash
   python3 ocr_gemini.py
   ```
 - **Whole study guide, block by block** (`anki_blocks.py`): sends each `### N.M Title`
   block of a Markdown note through the same generation run, one Gemini call per block,
-  without touching the clipboard. Inline `<svg>` lines are dropped (cards are built from
-  text) and figure captions are kept as text. Finished blocks are remembered in the
+  without touching the clipboard. Figures reach Gemini and the cards (see *Images on
+  cards* below): inline `<svg>` lines are rendered to PNG and Markdown image links
+  `![alt](path)` are read from disk (path relative to the note); captions stay as
+  text. `--no-images` sends text only. Finished blocks are remembered in the
   gitignored `.anki_blocks_progress.json`, so rerunning the same command resumes after a
   failure. Auto-apply by default (`--preview-only` to review instead).
   ```bash
   ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --list        # blocks and progress
   ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --from 2.4    # 2.4 onward
   ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --only 5.3 5.4
+  ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --no-images   # text only
   ```
   `--force` re-sends finished blocks and can create duplicates. Cards that duplicate one
   already in the target deck are skipped with a warning (see below), not fatal.
@@ -252,6 +263,7 @@ The LaTeX OCR macro is unchanged.
 │   ├── index.py          # Local SQLite index of notes and cached embeddings
 │   ├── journal.py        # Proposal journals, review queue, verified apply
 │   ├── actions.py        # Structured-output schema and action validation
+│   ├── images.py         # SVG-to-PNG (headless Chrome), image loading and media names
 │   ├── anki_connect.py   # AnkiConnect client
 │   ├── llm.py            # Gemini client (direct or Apigee) and API calls
 │   ├── settings.py       # Environment / config.py lookup
@@ -421,6 +433,37 @@ HTTP requests use one attempt only: Anki timeout 20 seconds, Gemini timeout 180
 seconds. Clipboard subprocesses time out after 15 seconds; raw clipboard size is
 also capped at 2 MB text and 15 MB PNG before API submission.
 
+### Images on cards
+
+Images flow to the cards by default whenever they are present; `--no-images` turns it
+off. Three sources, all handled the same way:
+
+- **Study-guide figures** (`anki_blocks.py`): each inline `<svg>` of a block is rendered
+  to a PNG (2x, white background, cropped to the figure's width/height or `viewBox`;
+  embedded rasters work) and each local Markdown image link is read from disk. Remote
+  `http(s)` links are ignored. Captions stay in the text.
+- **`--image PATH`** (repeatable, on `anki_gemini.py`): PNG, JPEG, GIF, WebP, or SVG
+  (rendered to PNG). At most 10 images of at most 15 MB per run; an unreadable file or a
+  missing Chrome stops the run before any Gemini call.
+- **The clipboard image** of the Keyboard Maestro macro: Gemini already read it; it can
+  now also be shown on a card. With `--no-images` Gemini still reads it but it is not
+  offered for cards.
+
+Every image gets a stable media name: a slug of its file name plus an 8-character hash
+of its source (for example `lecture-3-2-4-fig1-1a2b3c4d.png`), so rerunning the same
+figure reuses one file in Anki's media folder. Gemini receives all the images (a list,
+after the text) and a line naming them in order, and may write
+`<img src="NAME">` into a note field, using only those names. Validation rejects any
+other `<img>` source (an unsupplied name makes the generation retry with that
+feedback), while an update keeps the images its note already has. Images that applied
+actions use are stored (base64) in the journal, so a previewed or reviewed batch can be
+applied later; when an action is applied, its images are uploaded with AnkiConnect
+`storeMediaFile` *before* `addNote`/`updateNoteFields`. Images that no action uses are
+never uploaded. The image rules are appended to the model instruction only when images
+are attached (`IMAGE_INSTRUCTION` in `ankigen/cli.py`); `anki_prompt.txt` is unchanged.
+If a note is then refused as a duplicate, its images stay in the media folder (harmless,
+and reused by the next card that shows the same figure).
+
 ### Applying and recovering changes
 
 Updates call AnkiConnect `updateNoteFields` on the existing note ID and only send
@@ -457,8 +500,7 @@ new one. When Anki still refuses a note as a duplicate, that action is marked
 `skipped-duplicate` in the journal (closed, never retried), a warning names the card,
 and the run continues with the next action. `anki_blocks.py` counts such a block as
 done, so resuming does not resend it, and reports how many cards were skipped.
-Screenshots are used as source material but are not automatically attached to new
-notes. Model-returned tags are honored for creates; updates preserve existing tags.
+Model-returned tags are honored for creates; updates preserve existing tags.
 
 Offline tests (no credentials, Gemini calls, or Anki changes):
 

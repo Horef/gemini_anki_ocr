@@ -6,8 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import anki_connect
-from .actions import action_schema, repair_escapes, validate
+from . import anki_connect, images
+from .actions import action_schema, image_names, repair_escapes, validate
 from .anki_connect import FIELDS, packed
 from .journal import (apply_plan, archive_if_finished, print_review_summary,
                       review_latest, store_generation)
@@ -35,6 +35,18 @@ creates. Include a concise reason and source evidence for every action (describe
 visible evidence for images). For review/skip, omit fields and tags. Existing notes
 are only the most similar retrieved notes: do not interpret absence as proof that no
 matching note exists. Return an empty actions list when nothing is useful.
+'''
+
+# Appended to the system instruction only when images are attached to the run.
+IMAGE_INSTRUCTION = '''
+Images are attached after the source; the "Attached images" line gives each image's
+file name in order. Show an image on a note with <img src="NAME"> using exactly a
+supplied name, only when the note needs that picture (a question about what a
+diagram, plot, circuit or anatomy drawing shows, or an answer the picture illustrates).
+Most notes need no image. Put it in the field where it is needed (Question or
+Answer; Front question or Back), never in the Front term field. Never invent file
+names, never use another image source, and keep the note's text understandable on its
+own: describe the figure in words as well, because captions stay as text.
 '''
 
 
@@ -87,6 +99,12 @@ def parser():
     p.add_argument('--apply', type=Path, help='Apply saved creates and updates after reviewing its preview')
     p.add_argument('--only', nargs='+', type=int, help='With --apply: apply only these preview action indices')
     p.add_argument('--sync-index', action='store_true', help='Refresh and embed the local retrieval index; no generation')
+    p.add_argument('--image', action='append', type=Path, default=[], metavar='PATH',
+                   help='Attach an image (PNG, JPEG, GIF, WebP or SVG) that Gemini sees and '
+                        'may put on cards; repeatable')
+    p.add_argument('--no-images', action='store_true',
+                   help='Do not offer any image (clipboard or --image) for cards; Gemini still '
+                        'sees the clipboard image')
     p.add_argument('--model', default='gemini-3.7-flash')
     # Calibrated on gemini-embedding-2: near-duplicates ~0.8, tangential notes ~0.65.
     p.add_argument('--min-similarity', type=float, default=0.7,
@@ -110,6 +128,10 @@ def main():
         raise ValueError('--review-deck requires --review-latest.')
     if args.only is not None and not args.apply:
         raise ValueError('--only requires --apply.')
+    if args.image and args.no_images:
+        raise ValueError('--image and --no-images contradict each other.')
+    if args.image and (args.apply or args.review_latest or args.sync_index):
+        raise ValueError('--image only applies when generating cards.')
     if args.review_latest:
         review_latest(args.review_deck)
         return
@@ -129,18 +151,29 @@ def main():
     for model, fields in FIELDS.items():
         if not set(fields) <= set(anki_connect.request('modelFieldNames', modelName=model)):
             raise ValueError(f'Missing required fields in {model}')
+    attachments = images.load_all(args.image)  # SVG rendering fails here, before paid calls
     text, image = clipboard()
     g = Gemini(args)
     try:
-        return generate(g, args, text, image)
+        return generate(g, args, text, image, attachments)
     finally:
         g.client.close()
 
 
-def generate(g, args, text, image):
+def generate(g, args, text, image, attachments=()):
+    """`image`: the clipboard PNG (also used for retrieval); `attachments`: images.Image
+    objects from --image or a study-guide block. Both can be put on cards unless
+    --no-images is set; images used by applied actions are stored in the journal."""
+    figures = list(attachments)
+    if image and not getattr(args, 'no_images', False):
+        figures.insert(0, images.clipboard_image(image))
     parts = [text or 'Create notes from the concepts in this image.']
     if image:
         parts.append(g.types.Part.from_bytes(data=image, mime_type='image/png'))
+    if figures:
+        parts.append('Attached images, in order: ' + ', '.join(f.name for f in figures) + '.')
+    for f in attachments:
+        parts.append(g.types.Part.from_bytes(data=f.data, mime_type=f.mime))
     if g.count(args.model, parts, stage='source token counting') > args.source_tokens:
         raise ValueError('Source exceeds token guardrail; use a smaller excerpt. Nothing was truncated.')
     ranked, queued, diagnostics = retrieve(args.deck, text, image, g, args)
@@ -152,9 +185,11 @@ def generate(g, args, text, image):
     contents, feedback = parts + [packed(payload)], []
     for attempt in range(1, ATTEMPTS + 1):
         data = g.generate(args.model, contents + feedback,
-                          PROMPT.read_text() + INSTRUCTION, action_schema(), args.output_tokens)
+                          PROMPT.read_text() + INSTRUCTION + (IMAGE_INSTRUCTION if figures else ''),
+                          action_schema(), args.output_tokens)
         try:
-            actions = validate(repair_escapes(data), notes, args.actions)
+            actions = validate(repair_escapes(data), notes, args.actions,
+                               [f.name for f in figures])
             break
         except ValueError as exc:
             if attempt == ATTEMPTS:
@@ -164,7 +199,9 @@ def generate(g, args, text, image):
                         'Fix this and return the complete corrected actions list.']
     now = datetime.now(timezone.utc).isoformat()
     limits = {k: getattr(args, k) for k in DEFAULTS}
-    plan = dict(version=2, deck=args.deck, notes=notes, actions=actions, status={},
+    used = image_names(actions)
+    media = {f.name: images.media_entry(f) for f in figures if f.name in used}
+    plan = dict(version=2, deck=args.deck, notes=notes, actions=actions, status={}, media=media,
                 usage=g.usage, limits=limits, created_at=now, updated_at=now,
                 runs=[{'created_at': now, 'usage': g.usage, 'limits': limits,
                        'action_count': len(actions), 'retrieval': diagnostics}])
