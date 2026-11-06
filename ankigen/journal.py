@@ -117,20 +117,27 @@ def _apply_locked(path, kinds, only=None):
                 raise RuntimeError('Note moved outside the target deck.')
         plan['status'][key] = 'pending'
         save(path, plan)  # Original fields are already in plan, before every write.
-        if a['action'] == 'create':
-            nid = anki_connect.request('addNote', note=dict(
-                deckName=plan['deck'], modelName=a['model'], fields=a['fields'],
-                options={'allowDuplicate': False},
-                tags=sorted(set(a.get('tags', []) + ['gemini_auto']))))
-            if type(nid) is not int:
-                raise RuntimeError('addNote did not return a note ID.')
-            plan.setdefault('created_ids', {})[key] = nid
-            save(path, plan)
-        else:
-            nid = a['note_id']
-            changes = {k: v for k, v in a['fields'].items() if old[nid]['fields'][k] != v}
-            if changes:
-                anki_connect.request('updateNoteFields', note={'id': nid, 'fields': changes})
+        try:
+            if a['action'] == 'create':
+                nid = anki_connect.request('addNote', note=dict(
+                    deckName=plan['deck'], modelName=a['model'], fields=a['fields'],
+                    options={'allowDuplicate': False},
+                    tags=sorted(set(a.get('tags', []) + ['gemini_auto']))))
+                if type(nid) is not int:
+                    raise RuntimeError('addNote did not return a note ID.')
+                plan.setdefault('created_ids', {})[key] = nid
+                save(path, plan)
+            else:
+                nid = a['note_id']
+                changes = {k: v for k, v in a['fields'].items() if old[nid]['fields'][k] != v}
+                if changes:
+                    anki_connect.request('updateNoteFields', note={'id': nid, 'fields': changes})
+        except anki_connect.EditorConflict as exc:
+            del plan['status'][key]; save(path, plan)
+            target = f'Note {a["note_id"]}' if a['action'] == 'update' else 'The note'
+            raise RuntimeError(f'{target} is open in an Anki Browse/Edit/Add window. '
+                               'Close it (or select another note) and apply again; '
+                               'nothing was written.') from exc
         actual = snapshot(anki_connect.request('notesInfo', notes=[nid])[0])
         if any(actual['fields'].get(k) != v for k, v in a['fields'].items()):
             raise RuntimeError(f'Verification failed for note {nid}; inspect journal.')
@@ -141,7 +148,7 @@ def _apply_locked(path, kinds, only=None):
         plan['status'][key] = 'done'; save(path, plan)
         title = plain(a['fields'].get('Front') or a['fields'].get('Question', 'Note'))
         verb = 'Added' if a['action'] == 'create' else 'Updated'
-        print(f'✅ {verb}: {title[:80]}')
+        print(f'✅ {verb}: {title[:40]}')
 
 
 def needs_review(plan):

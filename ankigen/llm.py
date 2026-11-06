@@ -48,7 +48,8 @@ def build_client(key_name='ANKI_GEMINI_API_KEY', transport=None):
 
 
 class Gemini:
-    max_generations = 1
+    # First attempt plus validation retries (see cli.ATTEMPTS).
+    max_generations = 3
 
     def __init__(self, args):
         from google.genai import types

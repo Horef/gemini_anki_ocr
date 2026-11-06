@@ -11,6 +11,10 @@ FIELDS = {"ScientificBasic": ["Question", "Answer"],
 BATCH = 100
 
 
+class EditorConflict(RuntimeError):
+    """AnkiConnect refused a write because the note is open in an editor."""
+
+
 def packed(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
@@ -56,6 +60,9 @@ def request(action, **params):
     if not isinstance(data, dict) or 'error' not in data or 'result' not in data:
         raise RuntimeError(f'{action}: malformed AnkiConnect response')
     if data['error'] is not None:
+        # AnkiConnect checks open editors before writing, so nothing was changed.
+        if 'affected editor' in str(data['error']):
+            raise EditorConflict(f'{action}: {data["error"]}')
         raise RuntimeError(f'{action}: {data["error"]}')
     return data['result']
 

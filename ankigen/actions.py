@@ -30,6 +30,23 @@ def action_schema():
         'required': ['action', 'reason', 'evidence']}}}, 'required': ['actions']}
 
 
+# A LaTeX command written with one JSON backslash decodes as a control character
+# (e.g. "\frac" -> form feed + "rac"). Anki silently drops these characters.
+LATEX_ESCAPES = {'\f': '\\f', '\b': '\\b'}
+CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+
+
+def repair_escapes(data):
+    """Restore LaTeX backslashes that Gemini's JSON turned into \\f or \\b."""
+    for a in data.get('actions', []) if isinstance(data, dict) else []:
+        fields = a.get('fields') if isinstance(a, dict) else None
+        if isinstance(fields, dict):
+            for k, v in fields.items():
+                if isinstance(v, str):
+                    fields[k] = v.translate(str.maketrans(LATEX_ESCAPES))
+    return data
+
+
 def media(value):
     return re.findall(r'<(?:img|audio|video|source)\b[^>]*>|\[sound:[^\]]+\]', value, re.I)
 
@@ -69,6 +86,10 @@ def validate(data, notes, limit):
                 + '; '.join(details) + '.')
         if any(not isinstance(v, str) or not plain(v) for v in fields.values()):
             raise ValueError('Empty required field.')
+        bad = [k for k, v in fields.items() if CONTROL.search(v)]
+        if bad:
+            raise ValueError(f'Action {index} has control characters in {", ".join(bad)} '
+                             '(likely a broken LaTeX escape); nothing was written to Anki.')
         tags = a.get('tags', [])
         if not isinstance(tags, list) or any(not isinstance(t, str) or not re.fullmatch(r'[^\s<>]+', t) for t in tags):
             raise ValueError('Invalid tags.')
@@ -76,7 +97,10 @@ def validate(data, notes, limit):
             term = re.sub(r'\s*\([^)]*\)', '', plain(fields['Front'])).strip().casefold()
             reverse = plain(fields['Back'] + ' ' + fields['Back question']).casefold()
             if term and re.search(r'(?<!\w)' + re.escape(term) + r'(?!\w)', reverse):
-                raise ValueError('Reverse side reveals the Front term.')
+                raise ValueError(
+                    f'Action {index} ({plain(fields["Front"])!r}): Back or Back question '
+                    f'contains the Front term {term!r}. Rephrase them without the term, '
+                    'its acronym or aliases, or use ScientificBasic.')
         if a['action'] == 'update':
             nid = a.get('note_id')
             if type(nid) is not int or nid not in allowed or nid in updated:

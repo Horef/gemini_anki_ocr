@@ -43,6 +43,13 @@ class AnkiConnectTests(unittest.TestCase):
                 RuntimeError, r"AnkiConnect timed out during action 'notesInfo'"):
             anki_connect.request('notesInfo', notes=[123])
 
+    @patch.object(anki_connect.json, 'load', return_value={
+        'result': None, 'error': 'Close the affected editor before this API write, even if its content is saved.'})
+    @patch.object(anki_connect.urllib.request, 'urlopen')
+    def test_open_editor_raises_editor_conflict(self, _urlopen, _load):
+        with self.assertRaises(anki_connect.EditorConflict):
+            anki_connect.request('updateNoteFields', note={'id': 1, 'fields': {}})
+
     def test_mod_times_falls_back_when_action_is_unsupported(self):
         with patch.object(anki_connect, 'request',
                           side_effect=RuntimeError('notesModTime: unsupported action')):
@@ -122,6 +129,19 @@ class ValidationTests(unittest.TestCase):
     def test_review_cannot_write(self):
         a = update(); a['action'] = 'review'; self.check_bad(a)
 
+    def test_control_characters_rejected_before_write(self):
+        a = create(); a['fields']['Answer'] = 'Rate \\(\x0c_s\\)'
+        with self.assertRaisesRegex(ValueError, r'control characters in Answer'):
+            actions.validate({'actions': [a]}, [], 100)
+
+    def test_repair_restores_latex_eaten_by_json_escapes(self):
+        a = create()
+        a['fields']['Answer'] = 'Line\n\\(\x0crac{1}{2} \x08eta\\)'
+        fixed = actions.repair_escapes({'actions': [a]})
+        self.assertEqual(fixed['actions'][0]['fields']['Answer'],
+                         'Line\n\\(\\frac{1}{2} \\beta\\)')
+        actions.validate(fixed, [], 100)
+
 
 class ContextTests(unittest.TestCase):
     def test_complete_notes_and_budget(self):
@@ -188,6 +208,19 @@ class ApplyTests(unittest.TestCase):
             journal.apply_plan(self.path, {'update'})
         api.assert_not_called()
 
+    def test_editor_conflict_clears_pending_and_can_be_retried(self):
+        def conflict(action, **params):
+            if action == 'updateNoteFields':
+                raise anki_connect.EditorConflict('updateNoteFields: Close the affected editor')
+            return self.api(action, **params)
+        with patch.object(anki_connect, 'request', side_effect=conflict), \
+             self.assertRaisesRegex(RuntimeError, 'Note 123 is open'):
+            journal.apply_plan(self.path, {'update'})
+        self.assertEqual(json.loads(self.path.read_text())['status'], {})
+        with patch.object(anki_connect, 'request', side_effect=self.api):
+            journal.apply_plan(self.path, {'update'})
+        self.assertEqual(len(self.writes), 1)
+
     def test_whole_batch_validated_before_any_write(self):
         bad = create(); bad['fields']['Answer'] = ''
         self.plan['actions'].append(bad); journal.save(self.path, self.plan)
@@ -244,12 +277,13 @@ class GenerationTests(unittest.TestCase):
                     candidates=[NS(finish_reason=finish)], usage_metadata=None)
         return g
 
-    def test_single_generation_cap_and_config(self):
+    def test_generation_cap_and_config(self):
         g = self.gemini()
-        g.generate('model', ['input'], 'rules', {}, 24000)
+        for _ in range(g.max_generations):
+            g.generate('model', ['input'], 'rules', {}, 24000)
         with self.assertRaises(RuntimeError):
             g.generate('model', ['input'], 'rules', {}, 24000)
-        self.assertEqual(g.client.models.generate_content.call_count, 1)
+        self.assertEqual(g.client.models.generate_content.call_count, g.max_generations)
         cfg = g.client.models.generate_content.call_args.kwargs['config']
         self.assertEqual(cfg['max_output_tokens'], 24000)
         self.assertEqual(cfg['thinking_config'], {'thinking_level': 'low'})
@@ -346,6 +380,22 @@ class PipelineTests(unittest.TestCase):
                 cli.generate(g, cli.parser().parse_args(['D', '--preview-only']), 'text', None)
             payload = json.loads(g.generate.call_args.args[1][-1])
             self.assertEqual(payload['queued_proposals'], queued)
+
+    def test_rejected_generation_is_retried_with_feedback(self):
+        def two_sided(back):
+            return {'action': 'create', 'model': 'ScientificTwoSided', 'reason': 'r',
+                    'evidence': 'e', 'fields': {'Front': 'Autapse', 'Front question': 'What is it?',
+                                                'Back': back, 'Back question': 'Which synapse?'}}
+        with tempfile.TemporaryDirectory() as directory:
+            g = Mock(); g.count.return_value = 10; g.usage = []
+            g.generate.side_effect = [{'actions': [two_sided('An autapse targets itself')]},
+                                      {'actions': [two_sided('A synapse onto itself')]}]
+            with patch.object(journal, 'STATE', Path(directory)), \
+                 patch.object(cli, 'retrieve', return_value=([], [], {})):
+                cli.generate(g, cli.parser().parse_args(['D', '--preview-only']), 'text', None)
+            self.assertEqual(g.generate.call_count, 2)
+            retry = g.generate.call_args.args[1][-1]
+            self.assertIn("contains the Front term 'autapse'", retry)
 
     def test_sync_index_makes_no_generation(self):
         g = Mock()
