@@ -43,7 +43,7 @@ def review_dialog(plan, run_name, queued):
     root.minsize(780, 520)
     result = ('later', [])
     visible = [i for i, a in enumerate(plan['actions'])
-               if a['action'] != 'skip' and plan['status'].get(str(i)) not in {'done', 'dismissed'}]
+               if a['action'] != 'skip' and plan['status'].get(str(i)) not in {'done', 'dismissed', 'skipped-duplicate'}]
     eligible = {i for i in visible if plan['actions'][i]['action'] in {'create', 'update'}}
     selected = set(eligible)
     header = ttk.Frame(root, padding=16)

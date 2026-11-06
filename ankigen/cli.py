@@ -132,7 +132,7 @@ def main():
     text, image = clipboard()
     g = Gemini(args)
     try:
-        generate(g, args, text, image)
+        return generate(g, args, text, image)
     finally:
         g.client.close()
 
@@ -169,8 +169,9 @@ def generate(g, args, text, image):
                 runs=[{'created_at': now, 'usage': g.usage, 'limits': limits,
                        'action_count': len(actions), 'retrieval': diagnostics}])
     path, new_indices = store_generation(plan)
+    skipped = []
     if not args.preview_only:
-        apply_plan(path, {'create', 'update'} if args.auto_apply else {'create'}, new_indices)
+        skipped = apply_plan(path, {'create', 'update'} if args.auto_apply else {'create'}, new_indices)
     if archive_if_finished(path):
         print('Finished. No review needed; recovery records archived.')
     else:
@@ -179,6 +180,9 @@ def generate(g, args, text, image):
     counts = {kind: sum(a['action'] == kind for a in actions)
               for kind in ('create', 'update', 'review', 'skip')}
     print(' · '.join(f'{n} {kind}' for kind, n in counts.items() if n) or 'No new information.')
+    if skipped:
+        print(f'{len(skipped)} duplicate(s) skipped (already in {args.deck}).')
+    return {'skipped_duplicates': skipped}
 
 
 def run():

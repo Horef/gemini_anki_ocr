@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -256,6 +257,63 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(saved['created_ids']['0'], 123)
         self.assertEqual(saved['status']['0'], 'done')
 
+    def test_create_checks_duplicates_in_target_deck_only(self):
+        self.plan['actions'] = [create()]; journal.save(self.path, self.plan)
+        seen = []
+        def api(action, **params):
+            if action == 'addNote':
+                seen.append(params['note']['options'])
+                self.current['fields'].update(params['note']['fields'])
+                return 123
+            return self.api(action, **params)
+        with patch.object(anki_connect, 'request', side_effect=api):
+            journal.apply_plan(self.path, {'create'})
+        self.assertEqual(seen, [{'allowDuplicate': False, 'duplicateScope': 'deck',
+                                 'duplicateScopeOptions': {'deckName': 'D', 'checkChildren': False,
+                                                           'checkAllModels': False}}])
+
+    def test_duplicate_note_is_skipped_and_the_rest_continue(self):
+        second = create(); second['fields']['Question'] = 'What does Y do?'
+        self.plan['actions'] = [create(), second]; journal.save(self.path, self.plan)
+        added = []
+        def api(action, **params):
+            if action == 'addNote':
+                question = params['note']['fields']['Question']
+                if question == 'What does X do?':
+                    raise RuntimeError('addNote: cannot create note because it is a duplicate')
+                added.append(question)
+                self.current['fields'].update(params['note']['fields'])
+                return 124
+            if action == 'notesInfo':
+                return [dict(noteId=124, modelName='ScientificBasic', tags=['gemini_auto', 'science'],
+                             fields={k: {'value': v} for k, v in self.current['fields'].items()})]
+            return self.api(action, **params)
+        with patch.object(anki_connect, 'request', side_effect=api), \
+             patch('sys.stdout', new_callable=io.StringIO) as out:
+            skipped = journal.apply_plan(self.path, {'create'})
+        self.assertEqual(skipped, ['What does X do?'])
+        self.assertIn('Skipped duplicate', out.getvalue())
+        self.assertIn('What does X do?', out.getvalue())
+        self.assertEqual(added, ['What does Y do?'])
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved['status'], {'0': 'skipped-duplicate', '1': 'done'})
+        self.assertEqual(journal.waiting(saved), [])
+        # A rerun neither retries the duplicate nor adds the other card again.
+        with patch.object(anki_connect, 'request') as again:
+            self.assertEqual(journal.apply_plan(self.path, {'create'}), [])
+        again.assert_not_called()
+
+    def test_other_add_errors_still_stop_the_run(self):
+        self.plan['actions'] = [create()]; journal.save(self.path, self.plan)
+        def api(action, **params):
+            if action == 'addNote':
+                raise RuntimeError('addNote: model was not found')
+            return self.api(action, **params)
+        with patch.object(anki_connect, 'request', side_effect=api), \
+             self.assertRaisesRegex(RuntimeError, 'model was not found'):
+            journal.apply_plan(self.path, {'create'})
+        self.assertEqual(json.loads(self.path.read_text())['status']['0'], 'pending')
+
     def test_lock_prevents_concurrent_apply(self):
         self.path.with_suffix('.lock').touch()
         with patch.object(anki_connect, 'request') as api, self.assertRaises(FileExistsError):
@@ -369,6 +427,19 @@ class PipelineTests(unittest.TestCase):
                 cli.main()
             constructor.assert_not_called()
             apply.assert_called_once_with(proposal, {'create', 'update'}, None)
+
+    def test_run_reports_duplicates_skipped_by_apply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            g = Mock()
+            g.count.return_value = 10
+            g.generate.return_value = {'actions': [create()]}
+            g.usage = []
+            args = cli.parser().parse_args(['D', '--auto-apply'])
+            with patch.object(journal, 'STATE', Path(directory)), \
+                 patch.object(cli, 'retrieve', return_value=([note()], [], {})), \
+                 patch.object(cli, 'apply_plan', return_value=['What does X do?']):
+                summary = cli.generate(g, args, 'text', None)
+        self.assertEqual(summary, {'skipped_duplicates': ['What does X do?']})
 
     def test_queued_proposals_are_sent_as_data(self):
         with tempfile.TemporaryDirectory() as directory:

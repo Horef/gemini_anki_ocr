@@ -147,7 +147,8 @@ python3 telegram_bot.py
   ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --from 2.4    # 2.4 onward
   ./gemini_api/bin/python anki_blocks.py NOTE.md "Deck::Sub" --only 5.3 5.4
   ```
-  `--force` re-sends finished blocks and can create duplicates.
+  `--force` re-sends finished blocks and can create duplicates. Cards that duplicate one
+  already in the target deck are skipped with a warning (see below), not fatal.
 
 ---
 
@@ -450,6 +451,12 @@ pending action.
 Anki/API failures stop the workflow rather than pretending no duplicates exist.
 Retrieval is bounded, so a duplicate can still be missed if it ranks below the
 context limit; Anki's `allowDuplicate=False` is an additional exact-match check.
+That check only looks at the **target deck** (`duplicateScope: deck`, no sub-decks, no
+other note types), so a card that exists in another course's deck does not block a
+new one. When Anki still refuses a note as a duplicate, that action is marked
+`skipped-duplicate` in the journal (closed, never retried), a warning names the card,
+and the run continues with the next action. `anki_blocks.py` counts such a block as
+done, so resuming does not resend it, and reports how many cards were skipped.
 Screenshots are used as source material but are not automatically attached to new
 notes. Model-returned tags are honored for creates; updates preserve existing tags.
 

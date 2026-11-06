@@ -12,7 +12,8 @@ from .actions import validate
 from .anki_connect import plain, quoted, snapshot
 
 STATE = Path(__file__).resolve().parents[1] / '.anki_gemini_runs'
-CLOSED = {'done', 'dismissed'}
+# 'skipped-duplicate': AnkiConnect refused the note because the target deck already has it.
+CLOSED = {'done', 'dismissed', 'skipped-duplicate'}
 
 
 def save(path, data):
@@ -90,9 +91,14 @@ def plan_lock(path, conflict=(
 
 
 def apply_plan(path, kinds, only=None):
+    """Apply the selected actions; return the titles of notes skipped as duplicates."""
     path = Path(path)
     with plan_lock(path):
-        _apply_locked(path, kinds, only)
+        return _apply_locked(path, kinds, only)
+
+
+def is_duplicate_error(exc):
+    return 'duplicate' in str(exc).lower()
 
 
 def _apply_locked(path, kinds, only=None):
@@ -101,6 +107,7 @@ def _apply_locked(path, kinds, only=None):
     if only is not None and any(i < 0 or i >= len(plan['actions']) for i in only):
         raise ValueError('Selected action index is outside the proposal.')
     old = {n['note_id']: n for n in plan['notes']}
+    skipped = []
     for i, a in enumerate(plan['actions']):
         key = str(i)
         if (a['action'] not in kinds or plan['status'].get(key) in CLOSED
@@ -119,10 +126,26 @@ def _apply_locked(path, kinds, only=None):
         save(path, plan)  # Original fields are already in plan, before every write.
         try:
             if a['action'] == 'create':
-                nid = anki_connect.request('addNote', note=dict(
-                    deckName=plan['deck'], modelName=a['model'], fields=a['fields'],
-                    options={'allowDuplicate': False},
-                    tags=sorted(set(a.get('tags', []) + ['gemini_auto']))))
+                try:
+                    nid = anki_connect.request('addNote', note=dict(
+                        deckName=plan['deck'], modelName=a['model'], fields=a['fields'],
+                        # AnkiConnect checks the whole collection by default; a card that
+                        # exists in another course's deck must not block this deck.
+                        options={'allowDuplicate': False, 'duplicateScope': 'deck',
+                                 'duplicateScopeOptions': {'deckName': plan['deck'],
+                                                           'checkChildren': False,
+                                                           'checkAllModels': False}},
+                        tags=sorted(set(a.get('tags', []) + ['gemini_auto']))))
+                except RuntimeError as exc:
+                    if not is_duplicate_error(exc) or isinstance(exc, anki_connect.EditorConflict):
+                        raise
+                    # Refused as a duplicate, so nothing was written: close the action
+                    # and carry on with the rest of the block.
+                    plan['status'][key] = 'skipped-duplicate'; save(path, plan)
+                    title = action_identifier(a, 60)
+                    skipped.append(title)
+                    print(f'⚠️ Skipped duplicate (already in {plan["deck"]}): {title}')
+                    continue
                 if type(nid) is not int:
                     raise RuntimeError('addNote did not return a note ID.')
                 plan.setdefault('created_ids', {})[key] = nid
@@ -149,6 +172,7 @@ def _apply_locked(path, kinds, only=None):
         title = plain(a['fields'].get('Front') or a['fields'].get('Question', 'Note'))
         verb = 'Added' if a['action'] == 'create' else 'Updated'
         print(f'✅ {verb}: {title[:40]}')
+    return skipped
 
 
 def needs_review(plan):
@@ -278,7 +302,7 @@ def review_latest(deck=None):
             _apply_locked(path, {'create', 'update'}, selected)
         plan = json.loads(path.read_text())
         for i, a in enumerate(plan['actions']):
-            if a['action'] != 'skip' and plan['status'].get(str(i)) != 'done':
+            if a['action'] != 'skip' and plan['status'].get(str(i)) not in {'done', 'skipped-duplicate'}:
                 plan['status'][str(i)] = 'dismissed'
         archive_locked(path, plan, choice)
         print('Review finished. Batch cleared; recovery records archived.')

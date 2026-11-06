@@ -61,12 +61,13 @@ def mark_done(note, deck, block_id):
 
 
 def process(text, deck, mode):
-    """One anki_gemini run with `text` as the clipboard source."""
+    """One anki_gemini run with `text` as the clipboard source. Returns the run summary
+    ({'skipped_duplicates': [titles]}), or None when the run reports nothing."""
     cli.clipboard = lambda: (text, None)
     argv = sys.argv
     sys.argv = ['anki_gemini.py', deck, mode, '--quiet']
     try:
-        cli.main()
+        return cli.main()
     finally:
         sys.argv = argv
 
@@ -109,16 +110,24 @@ def main():
     mode = '--preview-only' if args.preview_only else '--auto-apply'
     print(f'{len(todo)} block(s) to process into "{args.deck}" ({mode[2:]}); '
           f'{len(chosen) - len(todo)} already done.')
+    skipped_total = 0
     for n, (i, title, text) in enumerate(todo, 1):
         print(f'\n[{n}/{len(todo)}] {i} {title}', flush=True)
         try:
-            process(text, args.deck, mode)
+            summary = process(text, args.deck, mode)
         except Exception as exc:
             print(f'❌ {i} failed: {exc}\nStopped. Rerun the same command to continue '
                   f'from {i}.', file=sys.stderr)
             sys.exit(1)
+        # A block whose cards were partly skipped as duplicates is still finished:
+        # the rest of it is in Anki, so resuming must not send it again.
+        skipped = len((summary or {}).get('skipped_duplicates', []))
+        skipped_total += skipped
+        if skipped:
+            print(f'{i}: {skipped} duplicate card(s) skipped; block counted as done.')
         mark_done(str(note), args.deck, i)
-    print('\nAll selected blocks processed.')
+    print('\nAll selected blocks processed.'
+          + (f' {skipped_total} duplicate card(s) skipped in total.' if skipped_total else ''))
 
 
 if __name__ == '__main__':
